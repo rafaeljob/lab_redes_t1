@@ -14,7 +14,7 @@
 uint8_t this_mac[6];
 uint8_t bcast_mac[6] =	{0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 uint8_t dst_mac[6] =	{0x00, 0x00, 0x00, 0x22, 0x22, 0x22};
-uint8_t src_mac[6] =	{0x00, 0x00, 0x00, 0x33, 0x33, 0x33};
+uint8_t src_mac[6] =	{0x00, 0x00, 0x00, 0xaa, 0x00, 0x02};
 uint8_t src_ip[4] = {0x0a, 0x00, 0x00, 0x15}; // 10.0.0.21
 uint8_t dst_ip[4] = {0x0a, 0x00, 0x00, 0x14}; // 10.0.0.20
 
@@ -26,6 +26,7 @@ int main(int argc, char *argv[])
 	char ifName[IFNAMSIZ];
 	struct sockaddr_ll socket_address;
 	int sockfd, numbytes, i;
+	struct in_addr addr;
 	
 	/* Get interface name */
 	if (argc > 1)
@@ -102,26 +103,27 @@ int main(int argc, char *argv[])
 			printf("	HLEN: %d\n", buffer_u.cooked_data.payload.arp.hlen);
 			printf("	DLEN: %d\n", buffer_u.cooked_data.payload.arp.plen);
 			printf("	Operation: %d\n", buffer_u.cooked_data.payload.arp.operation);
+			
 			printf("	Sender HA: ");
 			for (i = 0; i < 5; i++)
 				printf("%02x:", buffer_u.cooked_data.payload.arp.src_hwaddr[i]);
 			printf("%02x", buffer_u.cooked_data.payload.arp.src_hwaddr[5]);
 			printf("\n");
+			
 			printf("	Sender IP: ");
-			for (i = 0; i < 4; i++)
-				printf("%02x", buffer_u.cooked_data.payload.arp.src_paddr[i]);
-			printf("\n");
+			addr.s_addr = *(uint32_t*)&buffer_u.cooked_data.payload.arp.src_paddr;
+			printf( "%s\n", inet_ntoa( addr ) );
+			
 			printf("	Target HA: ");
 			for (i = 0; i < 5; i++)
 				printf("%02x:", buffer_u.cooked_data.payload.arp.tgt_hwaddr[i]);
 			printf("%02x", buffer_u.cooked_data.payload.arp.tgt_hwaddr[5]);
 			printf("\n");
-			printf("	Target IP: ");
-			for (i = 0; i < 4; i++)
-				printf("%02x", buffer_u.cooked_data.payload.arp.tgt_paddr[i]);
-			printf("\n");
 			
-			//printf("ARP packet, %d bytes - operation %d\n", numbytes, ntohs(buffer_u.cooked_data.payload.arp.operation));
+			printf("	Target IP: ");
+			addr.s_addr = *(uint32_t*)&buffer_u.cooked_data.payload.arp.tgt_paddr;
+			printf( "%s\n", inet_ntoa( addr ) );
+			
 			continue;
 		}
 		if (buffer_u.cooked_data.ethernet.eth_type == ntohs(ETH_P_IP)){
