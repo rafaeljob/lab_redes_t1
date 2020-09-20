@@ -38,6 +38,19 @@ void HandleSignal(int signal)
 	*running = 0;
 }
 
+int CompareMac(uint8_t *mac1, uint8_t *mac2)
+{
+	int i;
+	for (i = 0; i < 6; i++)
+	{
+		if (*mac1 != *mac2)
+			return 0;
+		mac1++;
+		mac2++;
+	}
+	return 1;
+}
+
 int CreateSocket(struct sockaddr_ll *socket_address)
 {
 	struct ifreq ifopts, if_idx, if_mac;
@@ -150,7 +163,7 @@ void P2()
 	}
 }
 
-/**/
+/* Man in The Middle. Print all ARP and IP packets that are not from P1 or P2 */
 void P3()
 {
 	signal(SIGINT, HandleSignal);
@@ -171,12 +184,15 @@ void P3()
 	printf("\n");
 	
 	/* To receive data (in this case we will inspect ARP and IP packets)... */
-	//TODO nao ler pacotes que sao do P1 ou do P2, verificar o srcip e srcmac
 
 	while (*running){
 		numbytes = recvfrom(sockfd, buffer_u.raw_data, ETH_LEN, 0, NULL, NULL);
 		
 		if (buffer_u.cooked_data.ethernet.eth_type == ntohs(ETH_P_ARP)){
+			/* do not print packets from P1 or P2 */
+			if (CompareMac(&buffer_u.cooked_data.payload.arp.src_hwaddr[0], &src_mac[0]))
+				continue;
+			
 			printf("******* ARP packet\n");
 			printf("	HW Type: %d\n", buffer_u.cooked_data.payload.arp.hw_type);
 			printf("	Protocol Type: %d\n", buffer_u.cooked_data.payload.arp.prot_type);
@@ -192,7 +208,7 @@ void P3()
 			
 			printf("	Sender IP: ");
 			addr.s_addr = *(uint32_t*)&buffer_u.cooked_data.payload.arp.src_paddr;
-			printf( "%s\n", inet_ntoa( addr ) );
+			printf( "%s\n", inet_ntoa(addr));
 			
 			printf("	Target HA: ");
 			for (i = 0; i < 5; i++)
@@ -202,7 +218,7 @@ void P3()
 			
 			printf("	Target IP: ");
 			addr.s_addr = *(uint32_t*)&buffer_u.cooked_data.payload.arp.tgt_paddr;
-			printf( "%s\n", inet_ntoa(addr));
+			printf( "%s\n\n", inet_ntoa(addr));
 			
 			continue;
 		}

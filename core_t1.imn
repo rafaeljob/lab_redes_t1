@@ -61,6 +61,7 @@ node n3 {
     iconcoords {639.0 344.0}
     labelcoords {637.0 380.0}
     interface-peer {eth0 n4}
+    services {DefaultRoute IPForward}
 }
 
 link l1 {
